@@ -31,6 +31,7 @@ int FalconConnectionPoolWaitAdjust = FALCON_CONNECTION_POOL_WAIT_ADJUST_DEFAULT;
 int FalconConnectionPoolWaitMin = FALCON_CONNECTION_POOL_WAIT_MIN_DEFAULT;
 int FalconConnectionPoolWaitMax = FALCON_CONNECTION_POOL_WAIT_MAX_DEFAULT;
 uint64_t FalconConnectionPoolShmemSize = FALCON_CONNECTION_POOL_SHMEM_SIZE_DEFAULT;
+char *FalconNodeLocalIp = NULL;
 static char *FalconConnectionPoolShmemBuffer = NULL;
 FalconShmemAllocator FalconConnectionPoolShmemAllocator;
 

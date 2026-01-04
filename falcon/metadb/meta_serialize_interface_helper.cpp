@@ -53,6 +53,20 @@ FalconSupportMetaService MetaServiceTypeDecode(int32_t type)
         return FalconSupportMetaService::CHOWN;
     case falcon::meta_proto::MetaServiceType::CHMOD:
         return FalconSupportMetaService::CHMOD;
+    case falcon::meta_proto::MetaServiceType::KV_PUT:
+        return FalconSupportMetaService::KV_PUT;
+    case falcon::meta_proto::MetaServiceType::KV_GET:
+        return FalconSupportMetaService::KV_GET;
+    case falcon::meta_proto::MetaServiceType::KV_DEL:
+        return FalconSupportMetaService::KV_DEL;
+    case falcon::meta_proto::MetaServiceType::SLICE_PUT:
+        return FalconSupportMetaService::SLICE_PUT;
+    case falcon::meta_proto::MetaServiceType::SLICE_GET:
+        return FalconSupportMetaService::SLICE_GET;
+    case falcon::meta_proto::MetaServiceType::SLICE_DEL:
+        return FalconSupportMetaService::SLICE_DEL;
+    case falcon::meta_proto::MetaServiceType::FETCH_SLICE_ID:
+        return FalconSupportMetaService::FETCH_SLICE_ID;
     default:
         return FalconSupportMetaService::NOT_SUPPORTED;
     }
@@ -99,6 +113,20 @@ int32_t MetaServiceTypeEncode(FalconSupportMetaService metaService)
         return falcon::meta_proto::MetaServiceType::CHOWN;
     case FalconSupportMetaService::CHMOD:
         return falcon::meta_proto::MetaServiceType::CHMOD;
+    case FalconSupportMetaService::KV_PUT:
+        return falcon::meta_proto::MetaServiceType::KV_PUT;
+    case FalconSupportMetaService::KV_GET:
+        return falcon::meta_proto::MetaServiceType::KV_GET;
+    case FalconSupportMetaService::KV_DEL:
+        return falcon::meta_proto::MetaServiceType::KV_DEL;
+    case FalconSupportMetaService::SLICE_PUT:
+        return falcon::meta_proto::MetaServiceType::SLICE_PUT;
+    case FalconSupportMetaService::SLICE_GET:
+        return falcon::meta_proto::MetaServiceType::SLICE_GET;
+    case FalconSupportMetaService::SLICE_DEL:
+        return falcon::meta_proto::MetaServiceType::SLICE_DEL;
+    case FalconSupportMetaService::FETCH_SLICE_ID:
+        return falcon::meta_proto::MetaServiceType::FETCH_SLICE_ID;
     default:
         return -1;
     }
@@ -658,4 +686,267 @@ bool SerializedDataMetaResponseEncodeWithPerProcessFlatBufferBuilder(FalconSuppo
                                                                      SerializedData *response)
 {
     return SerializedDataMetaResponseEncode(metaService, count, infoArray, FlatBufferBuilderPerProcess, response);
+}
+
+
+bool SerializedKvMetaParamDecode(FalconSupportMetaService metaService, SerializedData *param,
+    KvMetaProcessInfo infoData)
+{
+    uint8_t *buffer = (uint8_t *)param->buffer;
+    sd_size_t size = SerializedDataNextSeveralItemSize(param, 0, 1);
+    if (size == (sd_size_t) - 1) {
+        return false;
+    }
+    uint8_t *itemBuffer = (uint8_t *)buffer + SERIALIZED_DATA_ALIGNMENT;
+    size_t itemSize = size - SERIALIZED_DATA_ALIGNMENT;
+    flatbuffers::Verifier verifier(itemBuffer, itemSize);
+    if (!verifier.VerifyBuffer<falcon::meta_fbs::MetaParam>(NULL)) {
+        return false;
+    }
+    auto metaParam = falcon::meta_fbs::GetMetaParam(itemBuffer);
+    switch (metaService) {
+        case FalconSupportMetaService::KV_PUT: {
+            if (metaParam->param_type() != falcon::meta_fbs::AnyMetaParam::AnyMetaParam_KVParam) {
+                return false;
+            }
+            auto kvParam = metaParam->param_as_KVParam();
+            infoData->userkey = kvParam->key()->c_str();
+            infoData->valuelen = kvParam->value_len();
+            infoData->slicenum = kvParam->slice_num();
+            // vector
+            infoData->valuekey = const_cast<uint64_t*>(kvParam->value_key()->data());
+            infoData->location = const_cast<uint64_t*>(kvParam->location()->data());
+            infoData->slicelen = const_cast<uint32_t*>(kvParam->size()->data());
+            break;
+        }
+        case FalconSupportMetaService::KV_GET:
+        case FalconSupportMetaService::KV_DEL: {
+            // key only param
+            if (metaParam->param_type() != falcon::meta_fbs::AnyMetaParam::AnyMetaParam_KeyOnlyParam) {
+                return false;
+            }
+            infoData->userkey = metaParam->param_as_KeyOnlyParam()->key()->c_str();
+            break;
+        }
+        default:
+            return false;
+    }
+    return true;
+}
+
+static bool SerializedkVMetaResponseEncode(FalconSupportMetaService metaService,
+                                           KvMetaProcessInfo infoData,
+                                           flatbuffers::FlatBufferBuilder &builder,
+                                           SerializedData *response)
+{
+    builder.Clear();
+    flatbuffers::Offset<falcon::meta_fbs::MetaResponse> metaResponse;
+    if (infoData->errorCode != SUCCESS && infoData->errorCode != FILE_EXISTS) {
+        metaResponse = falcon::meta_fbs::CreateMetaResponse(builder, infoData->errorCode);
+    } else {
+        switch (metaService) {
+        case FalconSupportMetaService::KV_PUT:
+        case FalconSupportMetaService::KV_DEL: {
+            // error code only response
+            metaResponse = falcon::meta_fbs::CreateMetaResponse(builder, infoData->errorCode);
+            break;
+        }
+        case FalconSupportMetaService::KV_GET: {
+            auto valueKeyFB = builder.CreateVector(infoData->valuekey, infoData->slicenum);
+            auto locationFB = builder.CreateVector(infoData->location, infoData->slicenum);
+            auto slicelenFB = builder.CreateVector(infoData->slicelen, infoData->slicenum);
+            auto getkvmetaReponse = falcon::meta_fbs::CreateGetKVMetaResponse(builder,
+                                                                              infoData->valuelen,
+                                                                              infoData->slicenum,
+                                                                              valueKeyFB,
+                                                                              locationFB,
+                                                                              slicelenFB);
+           metaResponse = falcon::meta_fbs::CreateMetaResponse(builder,
+                                                               infoData->errorCode,
+                                                               falcon::meta_fbs::AnyMetaResponse_GetKVMetaResponse,
+                                                               getkvmetaReponse.Union());
+            break;
+        }
+        default:
+            return false;
+        }
+    }
+    builder.Finish(metaResponse);
+
+    char *buffer = SerializedDataApplyForSegment(response, builder.GetSize());
+    memcpy(buffer, builder.GetBufferPointer(), builder.GetSize());
+    return true;
+}
+
+bool SerializedKvMetaResponseEncodeWithPerProcessFlatBufferBuilder(FalconSupportMetaService metaService,
+                                                                   KvMetaProcessInfo infoData,
+                                                                   SerializedData *response)
+
+
+{
+    return SerializedkVMetaResponseEncode(metaService, infoData, FlatBufferBuilderPerProcess, response);
+}
+
+bool SerializedSliceParamDecode(FalconSupportMetaService metaService,
+                                int count,
+                                SerializedData *param,
+                                SliceProcessInfoData *infoArray)
+{
+    sd_size_t p = 0;
+    for (int i = 0; i < count; ++i) {
+        uint8_t *buffer = (uint8_t *)param->buffer + p;
+        sd_size_t size = SerializedDataNextSeveralItemSize(param, p, 1);
+        if (size == (sd_size_t) - 1) {
+            return false;
+        }
+
+        uint8_t *itemBuffer = (uint8_t *)buffer + SERIALIZED_DATA_ALIGNMENT;
+        size_t itemSize = size - SERIALIZED_DATA_ALIGNMENT;
+        flatbuffers::Verifier verifier(itemBuffer, itemSize);
+        if (!verifier.VerifyBuffer<falcon::meta_fbs::MetaParam>(NULL)) {
+            return false;
+        }
+        auto metaParam = falcon::meta_fbs::GetMetaParam(itemBuffer);
+
+        SliceProcessInfo info = infoArray + i;
+        switch (metaService) {
+            case FalconSupportMetaService::SLICE_PUT: {
+                if (metaParam->param_type() != falcon::meta_fbs::AnyMetaParam::AnyMetaParam_SliceInfoParam) {
+                    return false;
+                }
+                auto sliceParam = metaParam->param_as_SliceInfoParam();
+                info->name = sliceParam->filename()->c_str();
+                info->count = sliceParam->slicenum();
+                info->inodeIds = const_cast<uint64_t *>(sliceParam->inodeid()->data());
+                info->chunkIds = const_cast<uint32_t *>(sliceParam->chunkid()->data());
+                info->sliceIds = const_cast<uint64_t *>(sliceParam->sliceid()->data());
+                info->sliceSizes = const_cast<uint32_t *>(sliceParam->slicesize()->data());
+                info->sliceOffsets = const_cast<uint32_t *>(sliceParam->sliceoffset()->data());
+                info->sliceLens = const_cast<uint32_t *>(sliceParam->slicelen()->data());
+                info->sliceLoc1s = const_cast<uint32_t *>(sliceParam->sliceloc1()->data());
+                info->sliceloc2s = const_cast<uint32_t *>(sliceParam->sliceloc2()->data());
+                break;
+            }
+            case FalconSupportMetaService::SLICE_GET:
+            case FalconSupportMetaService::SLICE_DEL: {
+                if (metaParam->param_type() != falcon::meta_fbs::AnyMetaParam::AnyMetaParam_SliceIndexParam) {
+                    return false;
+                }
+                auto sliceParam = metaParam->param_as_SliceIndexParam();
+                info->name = sliceParam->filename()->c_str();
+                info->inputInodeid = sliceParam->inodeid();
+                info->inputChunkid = sliceParam->chunkid();
+                break;
+            }
+            default:
+                return false;
+        }
+
+        p += size;
+    }
+
+    return true;
+}
+
+static bool SerializedSliceResponseEncode(FalconSupportMetaService metaService,
+                                          int count,
+                                          SliceProcessInfoData *infoArray,
+                                          flatbuffers::FlatBufferBuilder &builder,
+                                          SerializedData *response)
+{
+    for (int i = 0; i < count; ++i) {
+        builder.Clear();
+        SliceProcessInfo info = infoArray + i;
+        flatbuffers::Offset<falcon::meta_fbs::MetaResponse> metaResponse;
+
+        switch (metaService) {
+            case FalconSupportMetaService::SLICE_PUT:
+            case FalconSupportMetaService::SLICE_DEL: {
+                metaResponse = falcon::meta_fbs::CreateMetaResponse(builder, info->errorCode);
+                break;
+            }
+            case FalconSupportMetaService::SLICE_GET: {
+                auto inodeIds = builder.CreateVector(info->inodeIds, info->count);
+                auto chunkIds = builder.CreateVector(info->chunkIds, info->count);
+                auto sliceIds = builder.CreateVector(info->sliceIds, info->count);
+                auto sliceSizes = builder.CreateVector(info->sliceSizes, info->count);
+                auto sliceOffsets = builder.CreateVector(info->sliceOffsets, info->count);
+                auto sliceLens = builder.CreateVector(info->sliceLens, info->count);
+                auto sliceLoc1s = builder.CreateVector(info->sliceLoc1s, info->count);
+                auto sliceloc2s = builder.CreateVector(info->sliceloc2s, info->count);
+
+                auto sliceResponse = falcon::meta_fbs::CreateSliceInfoResponse(
+                    builder, info->count, inodeIds, chunkIds, sliceIds, sliceSizes,
+                    sliceOffsets, sliceLens, sliceLoc1s, sliceloc2s
+                );
+
+                metaResponse = falcon::meta_fbs::CreateMetaResponse(builder,
+                                                                    info->errorCode,
+                                                                    falcon::meta_fbs::AnyMetaResponse_SliceInfoResponse,
+                                                                    sliceResponse.Union());
+                break;
+            }
+            default:
+                return false;
+        }
+
+        builder.Finish(metaResponse);
+
+        char *buffer = SerializedDataApplyForSegment(response, builder.GetSize());
+        memcpy(buffer, builder.GetBufferPointer(), builder.GetSize());
+    }
+    return true;
+}
+
+bool SerializedSliceResponseEncodeWithPerProcessFlatBufferBuilder(FalconSupportMetaService metaService,
+                                                                  int count,
+                                                                  SliceProcessInfoData *infoArray,
+                                                                  SerializedData *response)
+{
+    return SerializedSliceResponseEncode(metaService, count, infoArray, FlatBufferBuilderPerProcess, response);
+}
+
+bool SerializedSliceIdParamDecode(SerializedData *param, SliceIdProcessInfo infoData)
+{
+    uint8_t *buffer = (uint8_t *)param->buffer;
+    sd_size_t size = SerializedDataNextSeveralItemSize(param, 0, 1);
+    if (size == (sd_size_t) - 1) {
+        return false;
+    }
+
+    uint8_t *itemBuffer = (uint8_t *)buffer + SERIALIZED_DATA_ALIGNMENT;
+    size_t itemSize = size - SERIALIZED_DATA_ALIGNMENT;
+    flatbuffers::Verifier verifier(itemBuffer, itemSize);
+    if (!verifier.VerifyBuffer<falcon::meta_fbs::MetaParam>(NULL)) {
+        return false;
+    }
+
+    auto metaParam = falcon::meta_fbs::GetMetaParam(itemBuffer);
+    if (metaParam->param_type() != falcon::meta_fbs::AnyMetaParam::AnyMetaParam_SliceIdParam) {
+        return false;
+    }
+
+    auto sliceIdParam = metaParam->param_as_SliceIdParam();
+    infoData->count = sliceIdParam->count();
+    infoData->type = sliceIdParam->type();
+
+    return true;
+}
+
+bool SerializedSliceIdResponseEncodeWithPerProcessFlatBufferBuilder(SliceIdProcessInfo infoData, SerializedData *response)
+{
+    auto &builder = FlatBufferBuilderPerProcess;
+    builder.Clear();
+
+    auto sliceIdRes = falcon::meta_fbs::CreateSliceIdResponse(builder, infoData->start, infoData->end);
+    auto metaResponse = falcon::meta_fbs::CreateMetaResponse(builder,
+                                                             infoData->errorCode,
+                                                             falcon::meta_fbs::AnyMetaResponse_SliceIdResponse,
+                                                             sliceIdRes.Union());
+
+    builder.Finish(metaResponse);
+    char *buffer = SerializedDataApplyForSegment(response, builder.GetSize());
+    memcpy(buffer, builder.GetBufferPointer(), builder.GetSize());
+
+    return true;
 }

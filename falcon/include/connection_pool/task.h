@@ -7,6 +7,7 @@
 
 #include <brpc/server.h>
 #include <vector>
+#include <chrono>
 #include "falcon_meta_rpc.pb.h"
 #include "concurrentqueue/concurrentqueue.h"
 
@@ -21,6 +22,14 @@ class AsyncMetaServiceJob {
     google::protobuf::Closure *done;
 
   public:
+    // 性能统计时间点
+    std::chrono::steady_clock::time_point create_time;      // 创建时间
+    std::chrono::steady_clock::time_point dequeue_time;     // 出队时间（开始处理）
+    std::chrono::steady_clock::time_point shmem_done_time;  // 共享内存复制完成
+    std::chrono::steady_clock::time_point pg_send_time;     // 发送SQL时间
+    std::chrono::steady_clock::time_point pg_result_time;   // 收到SQL结果时间
+    std::chrono::steady_clock::time_point process_done_time; // 结果处理完成
+
     AsyncMetaServiceJob(brpc::Controller *cntl,
                         const MetaRequest *request,
                         Empty *response,
@@ -28,7 +37,8 @@ class AsyncMetaServiceJob {
         : cntl(cntl),
           request(request),
           response(response),
-          done(done)
+          done(done),
+          create_time(std::chrono::steady_clock::now())
     {
     }
     brpc::Controller *GetCntl() { return cntl; }
