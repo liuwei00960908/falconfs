@@ -24,7 +24,7 @@ RUN apt-get install -y tar wget make cmake ninja-build libreadline-dev liblz4-de
     libprotoc-dev libprotobuf-dev protobuf-compiler libgflags-dev libjsoncpp-dev \
     libleveldb-dev libfmt-dev libgtest-dev libgmock-dev libgoogle-glog-dev \
     libzookeeper-mt-dev libibverbs-dev iputils-ping net-tools jq moreutils \
-    build-essential git libboost-all-dev
+    build-essential git libboost-all-dev rsync
 
 # 从源码编译安装 PostgreSQL 17
 ARG PG_VERSION=17.2
