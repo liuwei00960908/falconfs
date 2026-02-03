@@ -1,11 +1,11 @@
 FROM 127.0.0.1:5000/ubuntu:24.04
 
+# 基础配置
 RUN apt-get update && echo -e "Asia\nShanghai" | apt-get install -y tzdata && \
     apt-get install -y locales && locale-gen en_US.UTF-8
-
 ENV TZ=Asia/Shanghai \
     LANG=en_US.UTF-8 \
-    LANGUAGE=en:en \
+    LANGUAGE=en_US:en \
     LC_ALL=en_US.UTF-8
 
 # 安装 GCC-14
@@ -17,17 +17,14 @@ RUN apt-get install -y gcc-14 g++-14 && \
     ln -sf /usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.33 /usr/lib/libstdc++.so.6 && \
     ln -sf /usr/lib/libstdc++.so.6 /usr/lib/libstdc++.so
 
-SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
-ENV LD_LIBRARY_PATH=/usr/local/lib64:/usr/local/lib
-
-# 安装基础依赖
+# 安装编译依赖
 RUN apt-get install -y tar wget make cmake ninja-build libreadline-dev liblz4-dev \
     libzstd-dev libpython3-dev bison flex m4 autoconf automake pkg-config \
     libssl-dev fuse libfuse-dev libtool libflatbuffers-dev flatbuffers-compiler \
     libprotoc-dev libprotobuf-dev protobuf-compiler libgflags-dev libjsoncpp-dev \
     libleveldb-dev libfmt-dev libgtest-dev libgmock-dev libgoogle-glog-dev \
     libzookeeper-mt-dev libibverbs-dev iputils-ping net-tools jq moreutils \
-    build-essential git libcurl4-openssl-dev
+    build-essential git libboost-all-dev
 
 # 从源码编译安装 PostgreSQL 17
 ARG PG_VERSION=17.2
@@ -44,25 +41,21 @@ ENV PATH=/usr/local/pgsql/bin:$PATH \
     LD_LIBRARY_PATH=/usr/local/pgsql/lib \
     PGDATA=/usr/local/pgsql/data
 
-RUN mv /usr/include/jsoncpp/json /usr/include/json && rm -rf /usr/include/jsoncpp
-
 # 安装 Prometheus C++
 RUN apt install -y libcurl4-openssl-dev
 ARG PROMETHEUS_CPP_VERSION=1.3.0
-ARG PROMETHEUS_DOWNLOAD_URL=https://github.com/jupp0r/prometheus-cpp/releases/download/v${PROMETHEUS_CPP_VERSION}/prometheus-cpp-with-submodules.tar.gz
-
-RUN wget -O- "${PROMETHEUS_DOWNLOAD_URL}" | tar -xzvf - -C /tmp && \
+RUN wget -O- "https://github.com/jupp0r/prometheus-cpp/releases/download/v${PROMETHEUS_CPP_VERSION}/prometheus-cpp-with-submodules.tar.gz" | \
+    tar -xzvf - -C /tmp && \
     cd "/tmp/prometheus-cpp-with-submodules" && \
     mkdir build && cd build && \
     cmake .. -DBUILD_SHARED_LIBS=ON -DENABLE_PULL=ON -DENABLE_COMPRESSION=OFF && \
     make -j$(nproc) && make install && \
-    rm -rf "/tmp/prometheus-cpp-with-submodule"
+    rm -rf "/tmp/prometheus-cpp-with-submodules"
 
 # 安装 brpc
 ARG BRPC_VERSION=1.12.1
-ARG BRPC_DOWNLOAD_URL=https://github.com/apache/brpc/archive/refs/tags/${BRPC_VERSION}.tar.gz
-
-RUN wget -O- "${BRPC_DOWNLOAD_URL}" | tar -xzvf - -C /tmp && \
+RUN wget -O- "https://github.com/apache/brpc/archive/refs/tags/${BRPC_VERSION}.tar.gz" | \
+    tar -xzvf - -C /tmp && \
     cd "/tmp/brpc-${BRPC_VERSION}" && \
     mkdir build && cd build && \
     cmake -GNinja -DWITH_GLOG=ON .. -DWITH_RDMA=ON && \
@@ -71,10 +64,9 @@ RUN wget -O- "${BRPC_DOWNLOAD_URL}" | tar -xzvf - -C /tmp && \
 
 # 安装 OBS SDK
 ARG OBS_VERSION=v3.24.12
-ARG OBS_DOWNLOAD_URL=https://github.com/huaweicloud/huaweicloud-sdk-c-obs/archive/refs/tags/${OBS_VERSION}.tar.gz
 ARG OBS_INSTALL_PREFIX=/usr/local/obs
-
-RUN wget -O- "${OBS_DOWNLOAD_URL}" | tar -xzvf - -C /tmp && \
+RUN wget -O- "https://github.com/huaweicloud/huaweicloud-sdk-c-obs/archive/refs/tags/${OBS_VERSION}.tar.gz" | \
+    tar -xzvf - -C /tmp && \
     cd "/tmp/huaweicloud-sdk-c-obs-${OBS_VERSION#v}" && \
     sed -i '/if(NOT DEFINED OPENSSL_INC_DIR)/,+5d' CMakeLists.txt && \
     sed -i '/OPENSSL/d' CMakeLists.txt && \
@@ -87,21 +79,8 @@ RUN wget -O- "${OBS_DOWNLOAD_URL}" | tar -xzvf - -C /tmp && \
 
 ENV LD_LIBRARY_PATH=/usr/local/obs/lib:$LD_LIBRARY_PATH
 
-# 安装 Docker
-RUN apt-get update && \
-    apt-get install -y ca-certificates curl && \
-    install -m 0755 -d /etc/apt/keyrings && \
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc && \
-    chmod a+r /etc/apt/keyrings/docker.asc && \
-    echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
-    $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | \
-    tee /etc/apt/sources.list.d/docker.list > /dev/null && \
-    apt-get update && \
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-# 复制本地源码
-COPY . /root/code/falconfs
+# 修复 jsoncpp 头文件路径
+RUN mv /usr/include/jsoncpp/json /usr/include/json && rm -rf /usr/include/jsoncpp
 
 # 设置工作目录
 WORKDIR /root/code/falconfs

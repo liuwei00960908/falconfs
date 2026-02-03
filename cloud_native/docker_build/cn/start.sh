@@ -1,7 +1,7 @@
 #!/bin/bash
-# 使用系统安装的 PostgreSQL 17
-export PATH=/usr/lib/postgresql/17/bin:$PATH
-export LD_LIBRARY_PATH=/usr/lib/postgresql/17/lib:${FALCONFS_INSTALL_DIR}/falcon_meta/lib
+# 使用源码编译安装的 PostgreSQL 17
+export PATH=/usr/local/pgsql/bin:$PATH
+export LD_LIBRARY_PATH=/usr/local/pgsql/lib:${FALCONFS_INSTALL_DIR}/falcon_meta/lib
 
 # 设置默认的安装目录
 FALCONFS_INSTALL_DIR=${FALCONFS_INSTALL_DIR:-/usr/local/falconfs}

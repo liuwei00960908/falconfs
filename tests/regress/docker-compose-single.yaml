@@ -21,14 +21,14 @@ x-falcon-common: &falcon-common
   stop_grace_period: 10s
 
 x-falcon-healthcheck: &falcon-healthcheck
-  test: ["CMD-SHELL", "bash /home/falconMeta/check_liveness.sh"]
+  test: ["CMD-SHELL", "bash /usr/local/falconfs/falcon_cn/check_liveness.sh"]
   interval: 10s
   timeout: 5s
   retries: 3
   start_period: 10s
   
 x-store-healthcheck: &store-healthcheck
-  test: ["CMD-SHELL", "bash /root/check_liveness.sh"]
+  test: ["CMD-SHELL", "bash /usr/local/falconfs/falcon_store/check_liveness.sh"]
   interval: 10s
   timeout: 5s
   retries: 3

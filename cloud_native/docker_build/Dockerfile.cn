@@ -9,11 +9,23 @@ ENV TZ=Asia/Shanghai \
 RUN apt-get install -y gdb vim tar python3 python3-pip libreadline-dev liblz4-dev libzstd-dev libssl-dev
 RUN apt-get install -y linux-tools-common linux-tools-generic net-tools
 RUN apt-get install -y numactl
-RUN apt-get install -y curl ca-certificates gnupg
-RUN curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg
-RUN echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | tee /etc/apt/sources.list.d/pgdg.list
-RUN apt-get -y update
-RUN apt-get install -y postgresql-17 postgresql-server-dev-17 postgresql-client-17 libpq-dev && apt-get clean && rm -rf /var/lib/apt/lists/*
+# 安装 PostgreSQL 编译依赖
+RUN apt-get install -y build-essential libreadline-dev liblz4-dev libzstd-dev libssl-dev flex bison wget
+
+# 从源码编译安装 PostgreSQL 17
+ARG PG_VERSION=17.2
+ARG PG_DOWNLOAD_URL=https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.gz
+
+RUN wget -O- "${PG_DOWNLOAD_URL}" | tar -xzvf - -C /tmp && \
+    cd /tmp/postgresql-${PG_VERSION} && \
+    ./configure --prefix=/usr/local/pgsql --without-icu --enable-debug && \
+    make -j$(nproc) && make install && \
+    rm -rf /tmp/postgresql-${PG_VERSION}
+
+# 设置 PostgreSQL 环境变量
+ENV PATH=/usr/local/pgsql/bin:$PATH \
+    LD_LIBRARY_PATH=/usr/local/pgsql/lib \
+    PGDATA=/usr/local/pgsql/data
 
 # 安装 Python 依赖
 RUN pip3 install --break-system-packages psycopg2 && \
