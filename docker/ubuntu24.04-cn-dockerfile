@@ -22,6 +22,13 @@ ENV TZ=Asia/Shanghai \
 RUN apt-get update && apt-get install -y gdb vim tar python3 python3-pip \
     libreadline-dev liblz4-dev libzstd-dev libssl-dev numactl
 
+# 从 builder 复制 PostgreSQL（需要 pg_config 来安装 psycopg2）
+COPY --from=builder /usr/local/pgsql /usr/local/pgsql
+
+# 设置 PostgreSQL 路径以便 pg_config 可用
+ENV PATH=/usr/local/pgsql/bin:$PATH \
+    LD_LIBRARY_PATH=/usr/local/pgsql/lib
+
 # 安装 Python 依赖
 RUN pip3 install --break-system-packages psycopg2 && \
     pip3 install --break-system-packages kazoo && \
