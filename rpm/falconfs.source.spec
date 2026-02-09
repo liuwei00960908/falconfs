@@ -88,21 +88,26 @@ if [ -d "/usr/local/obs" ]; then
     cp -a "/usr/local/obs" "%{buildroot}/usr/local/"
 fi
 
-mkdir -p "%{buildroot}%{_sysconfdir}/ld.so.conf.d"
-cat > "%{buildroot}%{_sysconfdir}/ld.so.conf.d/falconfs.conf" <<'EOF'
-/usr/local/falconfs/falcon_meta/lib
-/usr/local/falconfs/falcon_meta/lib/postgresql
-/usr/local/falconfs/falcon_client/lib
-/usr/local/falconfs/private-directory-test/lib
-EOF
-cat > "%{buildroot}%{_sysconfdir}/ld.so.conf.d/obs.conf" <<'EOF'
-/usr/local/obs/lib
-EOF
+# Remove copied system runtime libraries from private FalconFS lib dirs.
+# Keep only private/non-system dependencies bundled by FalconFS.
+for lib_dir in \
+    "%{buildroot}/usr/local/falconfs/falcon_meta/lib" \
+    "%{buildroot}/usr/local/falconfs/falcon_client/lib" \
+    "%{buildroot}/usr/local/falconfs/private-directory-test/lib"; do
+    if [ -d "${lib_dir}" ]; then
+        find "${lib_dir}" -maxdepth 1 \
+            \( -name 'libc.so*' -o -name 'libm.so*' -o -name 'libpthread.so*' -o \
+               -name 'libdl.so*' -o -name 'librt.so*' -o -name 'libresolv.so*' -o \
+               -name 'libcrypt.so*' -o -name 'ld-linux*.so*' \) \
+            -print -delete
+    fi
+done
 
 mkdir -p "%{buildroot}%{_sysconfdir}/profile.d"
 cat > "%{buildroot}%{_sysconfdir}/profile.d/falconfs.sh" <<'EOF'
 export FALCONFS_INSTALL_DIR=/usr/local/falconfs
 export PATH=/usr/local/pgsql/bin:/usr/local/falconfs/falcon_client/bin:$PATH
+export LD_LIBRARY_PATH=/usr/local/falconfs/falcon_meta/lib:/usr/local/falconfs/falcon_client/lib:/usr/local/obs/lib:$LD_LIBRARY_PATH
 export FALCONFS_WORKSPACE=/var/lib/falconfs
 export PGUSER=falconMeta
 EOF
@@ -113,16 +118,18 @@ find "%{buildroot}" -type f -exec chrpath -d {} \; 2>/dev/null || true
 %pre
 getent group falconMeta >/dev/null || groupadd -r falconMeta
 getent passwd falconMeta >/dev/null || \
-    useradd -r -g falconMeta -d /var/lib/falconfs -s /sbin/nologin falconMeta
+    useradd -r -g falconMeta -d /home/falconMeta -s /sbin/nologin falconMeta
 exit 0
 
 %post
-/sbin/ldconfig
-mkdir -p /var/lib/falconfs/data || true
-chown -R falconMeta:falconMeta /var/lib/falconfs/data || true
+/usr/bin/mkdir -p /var/lib/falconfs/data || true
+/usr/bin/chown -R falconMeta:falconMeta /var/lib/falconfs/data || true
+/usr/sbin/usermod -d /home/falconMeta falconMeta || true
+/usr/bin/mkdir -p /home/falconMeta || true
+/usr/bin/chown -R falconMeta:falconMeta /home/falconMeta || true
 
 %postun
-/sbin/ldconfig
+:
 
 %files
 %if 0%{?release_pkg}
@@ -135,6 +142,4 @@ chown -R falconMeta:falconMeta /var/lib/falconfs/data || true
 /usr/local/falconfs/
 %endif
 /usr/local/obs/
-%config(noreplace) %{_sysconfdir}/ld.so.conf.d/falconfs.conf
-%config(noreplace) %{_sysconfdir}/ld.so.conf.d/obs.conf
 %{_sysconfdir}/profile.d/falconfs.sh
