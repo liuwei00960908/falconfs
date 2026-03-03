@@ -53,6 +53,7 @@ services:
     environment:
       ZOO_MY_ID: 1
       ZOO_SERVERS: server.1=zk-1:2888:3888;2181 server.2=zk-2:2888:3888;2181 server.3=zk-3:2888:3888;2181
+      ZOO_STANDALONE_ENABLED: "false"
     volumes:
       - ${FALCON_DATA_PATH:?please set FALCON_DATA_PATH}/falcon-data/zk-1/data:/data
 
@@ -73,6 +74,7 @@ services:
     environment:
       ZOO_MY_ID: 2
       ZOO_SERVERS: server.1=zk-1:2888:3888;2181 server.2=zk-2:2888:3888;2181 server.3=zk-3:2888:3888;2181
+      ZOO_STANDALONE_ENABLED: "false"
     volumes:
       - ${FALCON_DATA_PATH:?please set FALCON_DATA_PATH}/falcon-data/zk-2/data:/data
 
@@ -93,6 +95,7 @@ services:
     environment:
       ZOO_MY_ID: 3
       ZOO_SERVERS: server.1=zk-1:2888:3888;2181 server.2=zk-2:2888:3888;2181 server.3=zk-3:2888:3888;2181
+      ZOO_STANDALONE_ENABLED: "false"
     volumes:
       - ${FALCON_DATA_PATH:?please set FALCON_DATA_PATH}/falcon-data/zk-3/data:/data
 
