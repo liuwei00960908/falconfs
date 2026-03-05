@@ -79,6 +79,20 @@
   docker push localhost:5000/zookeeper:3.8.3
   ```
 
+- Prepare full Debian package and place it at repository root:
+
+  ```bash
+  cd ~/code/falconfs
+  dpkg-buildpackage -b -us -uc
+  cp ../falconfs_0.1.0-1_amd64.deb ./falconfs-deb-full.deb
+  ```
+
+- The regress script builds one unified image for cn/dn/store/regress:
+
+  ```bash
+  export FALCON_FULL_IMAGE=localhost:5000/falconfs-full-ubuntu24.04:v0.1.0
+  ```
+
 - Run regress test using the command bellow
   
    ``` bash
