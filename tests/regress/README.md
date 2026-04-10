@@ -122,7 +122,8 @@
 ## Chaos fault injection (P0)
 
 - `tests/regress/chaos_run.sh` provides automated fault injection with recovery checks.
-- Current chaos scenarios include `S01~S07`:
+- `tests/regress/chaos_run.sh` is now a thin entry script; core logic is in `tests/regress/chaos_lib.sh`.
+- Current chaos scenarios include `S01~S08`:
   - `S01`: restart cn leader
   - `S01C2`: restart `falcon-cn-2` (fixed target, useful for deterministic repro)
   - `S02`: restart one dn leader
@@ -131,6 +132,7 @@
   - `S05`: kill `falcon_client` process in store
   - `S06`: stop cn leader, hold for supplement window, then start
   - `S07`: stop random dn, hold for supplement window, then start
+  - `S08`: stop cn leader, wait new leader, stop new leader, hold, then recover both
 
 - Core checks after each action:
   - `/falcon/ready` exists in ZK
@@ -204,6 +206,22 @@
     --dual-duration-min 120 \
     --triple-duration-min 120
   ```
+
+- Config-driven long-run entry:
+
+  ```bash
+  # 1) edit tests/regress/longrun_config.sh
+  # 2) dry run (print resolved suite command)
+  bash tests/regress/run_longrun.sh --dry-run
+  # 3) execute
+  bash tests/regress/run_longrun.sh
+  ```
+
+- Optional deterministic matrix for suite:
+  - default matrix file: `tests/regress/chaos_case_matrix_default.txt`
+  - each line format:
+    `stage|compose_file|topology|duration_min|action_plan_file|required_actions`
+  - disable matrix by not passing `--case-matrix-file`; suite then uses action CSVs directly.
 
 - Example command when container core ulimit is not `0`:
 

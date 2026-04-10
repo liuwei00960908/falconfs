@@ -17,10 +17,12 @@ POST_ACTION_GRACE_SEC=15
 STABLE_WINDOW_SEC=30
 RELIABILITY_TIMEOUT_SEC=900
 PROBE_MODE="meta"
+CASE_MATRIX_FILE=""
+STRICT_COVERAGE=0
 
 ACTIONS_SINGLE="S01,S03,S04,S05"
-ACTIONS_DUAL="S01,S02,S03,S04,S05,S06,S07"
-ACTIONS_TRIPLE="S01,S02,S03,S04,S05,S06,S07"
+ACTIONS_DUAL="S01,S02,S03,S04,S05,S06,S07,S08"
+ACTIONS_TRIPLE="S01,S02,S03,S04,S05,S06,S07,S08"
 
 SEED=20260305
 FRESH_START=1
@@ -28,6 +30,12 @@ FAIL_FAST=0
 CORE_ONCE_ENABLE=0
 CORE_LIMIT_KB=1048576
 CORE_ONCE_DIR=""
+
+declare -A MATRIX_COMPOSE=()
+declare -A MATRIX_TOPOLOGY=()
+declare -A MATRIX_DURATION=()
+declare -A MATRIX_ACTION_PLAN=()
+declare -A MATRIX_REQUIRE_ACTIONS=()
 
 usage() {
     cat <<'EOF'
@@ -46,8 +54,10 @@ Options:
   --reliability-timeout-sec <seconds>   default: 900
   --probe-mode <mode>                   meta|meta+fuse, default: meta
   --actions-single <csv>                default: S01,S03,S04,S05
-  --actions-dual <csv>                  default: S01,S02,S03,S04,S05,S06,S07
-  --actions-triple <csv>                default: S01,S02,S03,S04,S05,S06,S07
+  --actions-dual <csv>                  default: S01,S02,S03,S04,S05,S06,S07,S08
+  --actions-triple <csv>                default: S01,S02,S03,S04,S05,S06,S07,S08
+  --case-matrix-file <path>             deterministic stage matrix file
+  --strict-coverage                     fail if any single/dual/triple matrix stage missing
   --seed <int>                          default: 20260305
   --no-fresh-start                      do not run fresh-start per stage
   --fail-fast                           stop suite on first failed stage
@@ -136,6 +146,14 @@ parse_args() {
                 ACTIONS_TRIPLE="$2"
                 shift 2
                 ;;
+            --case-matrix-file)
+                CASE_MATRIX_FILE="$2"
+                shift 2
+                ;;
+            --strict-coverage)
+                STRICT_COVERAGE=1
+                shift
+                ;;
             --seed)
                 SEED="$2"
                 shift 2
@@ -173,11 +191,67 @@ parse_args() {
     done
 }
 
+trim_ws() {
+    local text="$1"
+    text="${text#"${text%%[![:space:]]*}"}"
+    text="${text%"${text##*[![:space:]]}"}"
+    printf '%s' "$text"
+}
+
+load_case_matrix() {
+    local raw line stage compose_file topology duration action_plan required
+    [[ -z "$CASE_MATRIX_FILE" ]] && return 0
+    CASE_MATRIX_FILE="$(resolve_path "$CASE_MATRIX_FILE")"
+    [[ ! -f "$CASE_MATRIX_FILE" ]] && { echo "matrix file not found: $CASE_MATRIX_FILE"; exit 1; }
+
+    while IFS= read -r raw || [[ -n "$raw" ]]; do
+        line="${raw%%#*}"
+        line="$(trim_ws "$line")"
+        [[ -z "$line" ]] && continue
+        IFS='|' read -r stage compose_file topology duration action_plan required <<<"$line"
+        stage="$(trim_ws "$stage")"
+        compose_file="$(trim_ws "$compose_file")"
+        topology="$(trim_ws "$topology")"
+        duration="$(trim_ws "$duration")"
+        action_plan="$(trim_ws "$action_plan")"
+        required="$(trim_ws "$required")"
+
+        case "$stage" in
+            single|dual|triple) ;;
+            *) echo "invalid matrix stage: $stage"; exit 1 ;;
+        esac
+        case "$topology" in
+            auto|single|dual|triple) ;;
+            *) echo "invalid matrix topology: $topology"; exit 1 ;;
+        esac
+        [[ -z "$compose_file" || -z "$duration" || -z "$action_plan" ]] && { echo "invalid matrix line: $raw"; exit 1; }
+
+        MATRIX_COMPOSE["$stage"]="$compose_file"
+        MATRIX_TOPOLOGY["$stage"]="$topology"
+        MATRIX_DURATION["$stage"]="$duration"
+        MATRIX_ACTION_PLAN["$stage"]="$action_plan"
+        MATRIX_REQUIRE_ACTIONS["$stage"]="$required"
+    done <"$CASE_MATRIX_FILE"
+
+    if [[ "$STRICT_COVERAGE" == "1" ]]; then
+        local stage
+        for stage in single dual triple; do
+            if [[ -z "${MATRIX_COMPOSE[$stage]:-}" ]]; then
+                echo "strict coverage failed: matrix missing stage '${stage}'"
+                exit 1
+            fi
+        done
+    fi
+}
+
 run_stage() {
     local stage="$1"
     local compose_file="$2"
     local duration="$3"
     local actions_csv="$4"
+    local topology_mode="${5:-auto}"
+    local action_plan_file="${6:-}"
+    local require_actions_csv="${7:-}"
     local stage_data="${DATA_PATH}/${stage}"
     local cmd=(
         bash "${REPO_ROOT}/tests/regress/chaos_run.sh"
@@ -191,11 +265,18 @@ run_stage() {
         --stable-window-sec "$STABLE_WINDOW_SEC"
         --reliability-timeout-sec "$RELIABILITY_TIMEOUT_SEC"
         --probe-mode "$PROBE_MODE"
-        --topology auto
+        --topology "$topology_mode"
         --actions "$actions_csv"
         --seed "$SEED"
         --teardown
     )
+
+    if [[ -n "$action_plan_file" ]]; then
+        cmd+=(--action-plan-file "$action_plan_file")
+    fi
+    if [[ -n "$require_actions_csv" ]]; then
+        cmd+=(--require-actions "$require_actions_csv")
+    fi
 
     if [[ "$FRESH_START" == "1" ]]; then
         cmd+=(--fresh-start)
@@ -225,6 +306,7 @@ main() {
 
     DATA_PATH="$(resolve_path "$DATA_PATH")"
     mkdir -p "$DATA_PATH"
+    load_case_matrix
     if [[ -n "$CORE_ONCE_DIR" ]]; then
         CORE_ONCE_DIR="$(resolve_path "$CORE_ONCE_DIR")"
         mkdir -p "$CORE_ONCE_DIR"
@@ -232,17 +314,51 @@ main() {
 
     local failed=0
 
-    run_stage "single" "tests/regress/docker-compose-single.yaml" "$SINGLE_DURATION_MIN" "$ACTIONS_SINGLE" || failed=1
+    local single_compose="tests/regress/docker-compose-single.yaml"
+    local dual_compose="tests/regress/docker-compose-dual.yaml"
+    local triple_compose="tests/regress/docker-compose-triple.yaml"
+    local single_topology="auto"
+    local dual_topology="auto"
+    local triple_topology="auto"
+    local single_duration="$SINGLE_DURATION_MIN"
+    local dual_duration="$DUAL_DURATION_MIN"
+    local triple_duration="$TRIPLE_DURATION_MIN"
+    local single_plan=""
+    local dual_plan=""
+    local triple_plan=""
+    local single_req=""
+    local dual_req=""
+    local triple_req=""
+
+    if [[ -n "$CASE_MATRIX_FILE" ]]; then
+        single_compose="${MATRIX_COMPOSE[single]:-$single_compose}"
+        dual_compose="${MATRIX_COMPOSE[dual]:-$dual_compose}"
+        triple_compose="${MATRIX_COMPOSE[triple]:-$triple_compose}"
+        single_topology="${MATRIX_TOPOLOGY[single]:-$single_topology}"
+        dual_topology="${MATRIX_TOPOLOGY[dual]:-$dual_topology}"
+        triple_topology="${MATRIX_TOPOLOGY[triple]:-$triple_topology}"
+        single_duration="${MATRIX_DURATION[single]:-$single_duration}"
+        dual_duration="${MATRIX_DURATION[dual]:-$dual_duration}"
+        triple_duration="${MATRIX_DURATION[triple]:-$triple_duration}"
+        single_plan="${MATRIX_ACTION_PLAN[single]:-}"
+        dual_plan="${MATRIX_ACTION_PLAN[dual]:-}"
+        triple_plan="${MATRIX_ACTION_PLAN[triple]:-}"
+        single_req="${MATRIX_REQUIRE_ACTIONS[single]:-}"
+        dual_req="${MATRIX_REQUIRE_ACTIONS[dual]:-}"
+        triple_req="${MATRIX_REQUIRE_ACTIONS[triple]:-}"
+    fi
+
+    run_stage "single" "$single_compose" "$single_duration" "$ACTIONS_SINGLE" "$single_topology" "$single_plan" "$single_req" || failed=1
     if [[ "$failed" == "1" && "$FAIL_FAST" == "1" ]]; then
         exit 1
     fi
 
-    run_stage "dual" "tests/regress/docker-compose-dual.yaml" "$DUAL_DURATION_MIN" "$ACTIONS_DUAL" || failed=1
+    run_stage "dual" "$dual_compose" "$dual_duration" "$ACTIONS_DUAL" "$dual_topology" "$dual_plan" "$dual_req" || failed=1
     if [[ "$failed" == "1" && "$FAIL_FAST" == "1" ]]; then
         exit 1
     fi
 
-    run_stage "triple" "tests/regress/docker-compose-triple.yaml" "$TRIPLE_DURATION_MIN" "$ACTIONS_TRIPLE" || failed=1
+    run_stage "triple" "$triple_compose" "$triple_duration" "$ACTIONS_TRIPLE" "$triple_topology" "$triple_plan" "$triple_req" || failed=1
 
     python3 - "$DATA_PATH" <<'PY'
 import json
