@@ -4,6 +4,10 @@ set -euo pipefail
 DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 source "$DIR/falcon_client_config.sh"
 
+CLIENT_LOG_DIR=${FALCON_CLIENT_LOG_DIR:-$DIR}
+CLIENT_LOG_FILE="${CLIENT_LOG_DIR}/falcon_client.log"
+mkdir -p "$CLIENT_LOG_DIR"
+
 is_mounted() {
     if command -v mountpoint >/dev/null 2>&1; then
         mountpoint -q "$MNT_PATH" 2>/dev/null
@@ -50,13 +54,11 @@ ensure_mountpoint_writable() {
     exit 1
 }
 
-# already healthy => no-op
 if is_mounted && [ -n "$(get_client_pids)" ]; then
     echo "falcon_client is already running and mounted at $MNT_PATH"
     exit 0
 fi
 
-# stale mount without process
 if is_mounted && [ -z "$(get_client_pids)" ]; then
     echo "Found stale mount at $MNT_PATH without falcon_client process, unmounting..."
     if ! umount "$MNT_PATH" 2>/dev/null; then
@@ -64,14 +66,12 @@ if is_mounted && [ -z "$(get_client_pids)" ]; then
     fi
 fi
 
-# stale process without mount
 if ! is_mounted && [ -n "$(get_client_pids)" ]; then
     stop_stale_clients
 fi
 
 ensure_mountpoint_writable
 
-# 清理并创建缓存目录
 [ -d "$CACHE_PATH" ] && rm -rf "$CACHE_PATH"
 mkdir -p "$CACHE_PATH" || {
     echo "Error: Failed to create cache directory" >&2
@@ -93,13 +93,13 @@ CLIENT_OPTIONS=(
     -socket_max_unwritten_bytes=268435456
 )
 
-nohup falcon_client "${CLIENT_OPTIONS[@]}" >"${DIR}/falcon_client.log" 2>&1 &
+nohup falcon_client "${CLIENT_OPTIONS[@]}" >"${CLIENT_LOG_FILE}" 2>&1 &
 client_pid=$!
 
 sleep 1
 if ! kill -0 "$client_pid" 2>/dev/null; then
     echo "Error: Failed to start falcon_client" >&2
-    [ -f "${DIR}/falcon_client.log" ] && tail -n 50 "${DIR}/falcon_client.log" || true
+    [ -f "${CLIENT_LOG_FILE}" ] && tail -n 50 "${CLIENT_LOG_FILE}" || true
     exit 1
 fi
 
