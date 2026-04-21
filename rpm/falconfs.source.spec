@@ -22,7 +22,7 @@ Requires:       findutils
 Requires:       python3
 Requires:       python3-requests python3-psycopg2 python3-kazoo
 Requires:       postgresql-17 postgresql-17-server
-Requires:       brpc zookeeper-c
+Requires:       brpc zookeeper-client-c
 
 BuildRequires:  bash gcc gcc-c++ make
 BuildRequires:  cmake ninja-build
@@ -48,7 +48,7 @@ BuildRequires:  python3-devel
 BuildRequires:  maven java-11-openjdk-devel
 BuildRequires:  wget tar rsync
 BuildRequires:  libstdc++-static zstd-devel
-BuildRequires:  brpc-devel zookeeper-c-devel
+BuildRequires:  brpc-devel zookeeper-client-c-devel
 BuildRequires:  postgresql-17-server-devel
 BuildRequires:  perl
 BuildRequires:  chrpath
@@ -77,16 +77,16 @@ mkdir -p "${STAGE_ROOT}"
 echo "Using pg_config: $(command -v pg_config)"
 pg_config --pgxs
 ./build.sh build falcon --comm-plugin=brpc
-./build.sh build falcon --comm-plugin=hcom
+./build.sh build falcon --comm-plugin=hcom  
 
-test -f ./falcon/libbrpcplugin.so
+test -f ./falcon/libbrpcplugin.so  
 test -f ./falcon/libhcomplugin.so
 
 %install
 set -euo pipefail
-export STAGE_ROOT="%{_builddir}/falconfs-stage"
+  export STAGE_ROOT="%{_builddir}/falconfs-stage"
 export FALCONFS_INSTALL_DIR="${STAGE_ROOT}/usr/local/falconfs"
-rm -rf "%{buildroot}" "${STAGE_ROOT}"
+rm -rf "%{buildroot}" "${STAGE_ROOT}"  
 mkdir -p "${STAGE_ROOT}"
 ./build.sh install falcon --comm-plugin=brpc
 
