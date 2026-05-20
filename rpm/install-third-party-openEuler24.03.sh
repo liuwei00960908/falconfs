@@ -2,13 +2,13 @@
 
 set -euo pipefail
 
-export DEBIAN_FRONTEND=noninteractive
-
 PG_VERSION="${PG_VERSION:-17.7}"
 BRPC_VERSION="${BRPC_VERSION:-1.14.1}"
-PROMETHEUS_CPP_VERSION="${PROMETHEUS_CPP_VERSION:-1.3.0}"
+PROMETHEUS_VERSION="${PROMETHEUS_VERSION:-1.3.0}"
+ZK_VERSION="${ZK_VERSION:-3.9.1}"
 
 PG_PREFIX="${PG_PREFIX:-/usr/local/pgsql}"
+INSTALL_PREFIX="${INSTALL_PREFIX:-/usr/local}"
 SOURCE_DIR="${SOURCE_DIR:-/tmp/falconfs-third-party-src}"
 
 if [[ "${EUID}" -eq 0 ]]; then
@@ -21,12 +21,21 @@ else
     SUDO="sudo"
 fi
 
+if command -v dnf >/dev/null 2>&1; then
+    PKG_MANAGER="dnf"
+elif command -v yum >/dev/null 2>&1; then
+    PKG_MANAGER="yum"
+else
+    echo "Error: dnf or yum is required on openEuler." >&2
+    exit 1
+fi
+
 retry_download() {
     local url="$1"
     local output="$2"
 
     for attempt in 1 2 3; do
-        if wget --timeout=120 --tries=1 -O "$output" "$url"; then
+        if wget --no-check-certificate --timeout=120 --tries=1 -O "$output" "$url"; then
             return 0
         fi
         echo "Download failed (attempt ${attempt}/3): ${url}" >&2
@@ -37,87 +46,73 @@ retry_download() {
     return 1
 }
 
-install_apt_dependencies() {
-    ${SUDO} apt-get update
-    ${SUDO} apt-get install -y \
-        ca-certificates \
-        tzdata \
-        locales \
+install_system_dependencies() {
+    ${SUDO} "$PKG_MANAGER" clean all || true
+    ${SUDO} "$PKG_MANAGER" makecache
+    ${SUDO} "$PKG_MANAGER" groupinstall -y "Development Tools" || true
+    ${SUDO} "$PKG_MANAGER" reinstall -y glibc-common || true
+    ${SUDO} "$PKG_MANAGER" install -y \
+        bash \
         sudo \
         git \
-        rsync \
-        tar \
-        wget \
-        curl \
+        findutils \
+        shadow \
+        util-linux \
+        glibc-langpack-en \
+        glibc-all-langpacks \
+        gcc \
+        gcc-c++ \
         make \
         cmake \
         ninja-build \
-        build-essential \
-        gcc-14 \
-        g++-14 \
-        bison \
-        flex \
-        m4 \
         autoconf \
         automake \
-        pkg-config \
         libtool \
-        libreadline-dev \
-        liblz4-dev \
-        libzstd-dev \
-        zstd \
-        libssl-dev \
-        fuse \
-        libfuse-dev \
-        libflatbuffers-dev \
-        flatbuffers-compiler \
-        libprotoc-dev \
-        libprotobuf-dev \
+        bison \
+        flex \
+        readline-devel \
+        openssl-devel \
+        gflags-devel \
+        glog-devel \
+        leveldb-devel \
+        snappy-devel \
+        fmt-devel \
+        gperftools-devel \
+        libunwind-devel \
+        rdma-core-devel \
+        fuse-devel \
+        libcurl-devel \
+        jansson-devel \
+        libffi-devel \
+        libzstd-devel \
+        xz-devel \
+        expat-devel \
+        libxml2-devel \
+        systemd-devel \
+        protobuf-devel \
         protobuf-compiler \
-        libgflags-dev \
-        libjsoncpp-dev \
-        libleveldb-dev \
-        libsnappy-dev \
-        libfmt-dev \
-        libboost-thread-dev \
-        libboost-system-dev \
-        libboost-filesystem-dev \
-        libboost-program-options-dev \
-        libgtest-dev \
-        libgmock-dev \
-        libgoogle-glog-dev \
-        libzookeeper-mt-dev \
-        libibverbs-dev \
-        rdma-core \
-        libcurl4-openssl-dev \
-        libunwind-dev \
-        libjansson-dev \
-        libffi-dev \
-        libxml2-dev \
-        libsystemd-dev \
-        libthrift-dev \
-        libcppunit-dev \
+        flatbuffers-devel \
+        flatbuffers-compiler \
+        jsoncpp-devel \
+        thrift-devel \
+        cppunit-devel \
+        gtest-devel \
+        gmock-devel \
         python3 \
-        python3-dev \
-        python3-pip \
+        python3-devel \
         python3-requests \
         python3-psycopg2 \
         python3-kazoo \
-        jq \
-        moreutils \
-        iputils-ping \
-        net-tools
-
-    ${SUDO} update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 60
-    ${SUDO} update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 60
-    ${SUDO} update-alternatives --set gcc /usr/bin/gcc-14
-    ${SUDO} update-alternatives --set g++ /usr/bin/g++-14
-
-    if [[ ! -e /usr/include/json && -d /usr/include/jsoncpp/json ]]; then
-        ${SUDO} ln -s /usr/include/jsoncpp/json /usr/include/json
-    fi
-
-    ${SUDO} locale-gen en_US.UTF-8
+        wget \
+        tar \
+        rsync \
+        libstdc++-static \
+        zstd-devel \
+        perl \
+        java-11-openjdk-devel \
+        maven \
+        hostname \
+        jq
 }
 
 install_postgresql() {
@@ -158,6 +153,9 @@ install_brpc() {
     cmake -S "$src_dir" -B "$src_dir/build" -GNinja \
         -DWITH_GLOG=ON \
         -DWITH_RDMA=ON \
+        -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
+        -DCMAKE_PREFIX_PATH="$INSTALL_PREFIX" \
+        -DCMAKE_CXX_FLAGS="-Wno-error -Wno-deprecated-declarations" \
         -DCMAKE_BUILD_TYPE=Release
     ninja -C "$src_dir/build"
     ${SUDO} ninja -C "$src_dir/build" install
@@ -169,9 +167,9 @@ install_prometheus_cpp() {
         return 0
     fi
 
-    local archive="${SOURCE_DIR}/prometheus-cpp-with-submodules-${PROMETHEUS_CPP_VERSION}.tar.gz"
+    local archive="${SOURCE_DIR}/prometheus-cpp-with-submodules-${PROMETHEUS_VERSION}.tar.gz"
     local src_dir="${SOURCE_DIR}/prometheus-cpp-with-submodules"
-    local url="https://github.com/jupp0r/prometheus-cpp/releases/download/v${PROMETHEUS_CPP_VERSION}/prometheus-cpp-with-submodules.tar.gz"
+    local url="https://github.com/jupp0r/prometheus-cpp/releases/download/v${PROMETHEUS_VERSION}/prometheus-cpp-with-submodules.tar.gz"
 
     rm -rf "$src_dir"
     retry_download "$url" "$archive"
@@ -181,15 +179,40 @@ install_prometheus_cpp() {
         -DBUILD_SHARED_LIBS=ON \
         -DENABLE_PULL=ON \
         -DENABLE_COMPRESSION=OFF \
+        -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
         -DCMAKE_BUILD_TYPE=Release
     make -C "$src_dir/build" -j"$(nproc)"
     ${SUDO} make -C "$src_dir/build" install
 }
 
+install_zookeeper_c_client() {
+    if ldconfig -p 2>/dev/null | grep -q 'libzookeeper_mt\.so'; then
+        echo "ZooKeeper C client already installed."
+        return 0
+    fi
+
+    local archive="${SOURCE_DIR}/apache-zookeeper-${ZK_VERSION}.tar.gz"
+    local src_dir="${SOURCE_DIR}/apache-zookeeper-${ZK_VERSION}"
+    local url="https://archive.apache.org/dist/zookeeper/zookeeper-${ZK_VERSION}/apache-zookeeper-${ZK_VERSION}.tar.gz"
+
+    rm -rf "$src_dir"
+    retry_download "$url" "$archive"
+    tar -xzf "$archive" -C "$SOURCE_DIR"
+
+    pushd "$src_dir" >/dev/null
+    mvn compile -DskipTests -pl zookeeper-jute -T 1C
+    cd zookeeper-client/zookeeper-client-c
+    autoreconf -if
+    ./configure --prefix="$INSTALL_PREFIX"
+    make -j"$(nproc)"
+    ${SUDO} make install
+    popd >/dev/null
+}
+
 configure_environment() {
     ${SUDO} tee /etc/ld.so.conf.d/falconfs-third-party.conf >/dev/null <<EOF
-/usr/local/lib
-/usr/local/lib64
+${INSTALL_PREFIX}/lib
+${INSTALL_PREFIX}/lib64
 ${PG_PREFIX}/lib
 EOF
     ${SUDO} ldconfig
@@ -197,14 +220,14 @@ EOF
     ${SUDO} ln -sf "${PG_PREFIX}/bin/pg_config" /usr/local/bin/pg_config
 
     ${SUDO} tee /etc/profile.d/falconfs-third-party.sh >/dev/null <<EOF
-export PATH=${PG_PREFIX}/bin:/usr/local/bin:\$PATH
-export LD_LIBRARY_PATH=${PG_PREFIX}/lib:/usr/local/lib:/usr/local/lib64:\${LD_LIBRARY_PATH:-}
+export PATH=${PG_PREFIX}/bin:${INSTALL_PREFIX}/bin:\$PATH
+export LD_LIBRARY_PATH=${PG_PREFIX}/lib:${INSTALL_PREFIX}/lib:${INSTALL_PREFIX}/lib64:\${LD_LIBRARY_PATH:-}
 EOF
 }
 
 verify_installation() {
-    export PATH="${PG_PREFIX}/bin:/usr/local/bin:${PATH}"
-    export LD_LIBRARY_PATH="${PG_PREFIX}/lib:/usr/local/lib:/usr/local/lib64:${LD_LIBRARY_PATH:-}"
+    export PATH="${PG_PREFIX}/bin:${INSTALL_PREFIX}/bin:${PATH}"
+    export LD_LIBRARY_PATH="${PG_PREFIX}/lib:${INSTALL_PREFIX}/lib:${INSTALL_PREFIX}/lib64:${LD_LIBRARY_PATH:-}"
 
     pg_config --version
     gcc --version | head -n 1
@@ -215,16 +238,16 @@ verify_installation() {
 
 main() {
     mkdir -p "$SOURCE_DIR"
-    install_apt_dependencies
+    install_system_dependencies
     install_postgresql
     install_brpc
     install_prometheus_cpp
+    install_zookeeper_c_client
     configure_environment
     verify_installation
 
-    echo "Third-party dependencies installed."
-    echo "pg_config is linked into /usr/local/bin for immediate build use."
-    echo "OBS SDK is optional; install it only when building with --with-obs-storage."
+    echo "Third-party dependencies installed for openEuler 24.03."
+    echo "OBS SDK is not installed; install it separately only when building with --with-obs-storage."
 }
 
 main "$@"
