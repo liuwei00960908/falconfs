@@ -229,11 +229,34 @@ verify_installation() {
     export PATH="${PG_PREFIX}/bin:${INSTALL_PREFIX}/bin:${PATH}"
     export LD_LIBRARY_PATH="${PG_PREFIX}/lib:${INSTALL_PREFIX}/lib:${INSTALL_PREFIX}/lib64:${LD_LIBRARY_PATH:-}"
 
-    pg_config --version
-    gcc --version | head -n 1
-    g++ --version | head -n 1
+    if ! command -v pg_config >/dev/null 2>&1; then
+        echo "Error: pg_config not found" >&2
+        exit 1
+    fi
 
-    ldconfig -p | grep -E 'libbrpc|libprometheus-cpp|libzookeeper_mt' || true
+    pg_version="$(pg_config --version)"
+    if [[ "$pg_version" != *"$PG_VERSION"* ]]; then
+        echo "Error: unexpected PostgreSQL version: $pg_version (expected $PG_VERSION)" >&2
+        exit 1
+    fi
+
+    if ! ldconfig -p | grep -q 'libbrpc\.so'; then
+        echo "Error: libbrpc not found in ldconfig cache" >&2
+        exit 1
+    fi
+
+    if ! ldconfig -p | grep -q 'libprometheus-cpp-core\.so'; then
+        echo "Error: libprometheus-cpp-core not found in ldconfig cache" >&2
+        exit 1
+    fi
+
+    if ! ldconfig -p | grep -q 'libzookeeper_mt\.so'; then
+        echo "Error: libzookeeper_mt not found in ldconfig cache" >&2
+        exit 1
+    fi
+
+    echo "Verified PostgreSQL: $pg_version"
+    echo "Verified brpc, prometheus-cpp, and ZooKeeper C client libraries."
 }
 
 main() {
