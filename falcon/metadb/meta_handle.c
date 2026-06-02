@@ -3098,6 +3098,42 @@ static Oid FalconTableIndexOid(const char *tableName)
     return indexOid;
 }
 
+static bool KeyBlockExists(Relation keyBlockRel, Oid keyBlockIndexOid, const char *key)
+{
+    ScanKeyData scanKey[1];
+    scanKey[0] = KeyBlockTableScanKey[KEY_BLOCK_TABLE_KEY_EQ];
+    scanKey[0].sk_argument = CStringGetTextDatum(key);
+
+    SysScanDesc scanDesc = systable_beginscan(keyBlockRel,
+                                              keyBlockIndexOid,
+                                              true,
+                                              GetTransactionSnapshot(),
+                                              1,
+                                              scanKey);
+    HeapTuple heapTuple = systable_getnext(scanDesc);
+    bool exists = HeapTupleIsValid(heapTuple);
+    systable_endscan(scanDesc);
+    return exists;
+}
+
+static bool SizeFileExists(Relation sizeFileRel, Oid sizeFileIndexOid, uint64_t size)
+{
+    ScanKeyData scanKey[LAST_FALCON_SIZE_FILE_TABLE_SCANKEY_TYPE];
+    scanKey[SIZE_FILE_TABLE_SIZE_EQ] = SizeFileTableScanKey[SIZE_FILE_TABLE_SIZE_EQ];
+    scanKey[SIZE_FILE_TABLE_SIZE_EQ].sk_argument = UInt64GetDatum(size);
+
+    SysScanDesc scanDesc = systable_beginscan(sizeFileRel,
+                                              sizeFileIndexOid,
+                                              true,
+                                              GetTransactionSnapshot(),
+                                              LAST_FALCON_SIZE_FILE_TABLE_SCANKEY_TYPE,
+                                              scanKey);
+    HeapTuple heapTuple = systable_getnext(scanDesc);
+    bool exists = HeapTupleIsValid(heapTuple);
+    systable_endscan(scanDesc);
+    return exists;
+}
+
 static void FillKeyBlockInfoFromTuple(KeyBlockProcessInfo info, Relation rel, HeapTuple heapTuple)
 {
     bool isNull;
@@ -3155,8 +3191,8 @@ static void FalconBlockGetOrStatHandle(KeyBlockProcessInfo *infoArray, int count
 {
     SetUpScanCaches();
 
-    Relation keyBlockRel = table_open(GetRelationOidByName_FALCON(KeyBlockTableName),
-                                      updateAtime ? RowExclusiveLock : AccessShareLock);
+    LOCKMODE keyBlockLockMode = updateAtime ? AccessExclusiveLock : AccessShareLock;
+    Relation keyBlockRel = table_open(GetRelationOidByName_FALCON(KeyBlockTableName), keyBlockLockMode);
     Oid keyBlockIndexOid = FalconTableIndexOid(KeyBlockTableName);
     TupleDesc tupleDesc = RelationGetDescr(keyBlockRel);
 
@@ -3205,7 +3241,7 @@ static void FalconBlockGetOrStatHandle(KeyBlockProcessInfo *infoArray, int count
         }
     }
 
-    table_close(keyBlockRel, updateAtime ? RowExclusiveLock : AccessShareLock);
+    table_close(keyBlockRel, updateAtime ? NoLock : AccessShareLock);
 }
 
 void FalconBlockGetHandle(KeyBlockProcessInfo *infoArray, int count)
@@ -3217,12 +3253,12 @@ void FalconBlockAllocHandle(KeyBlockProcessInfo *infoArray, int count)
 {
     for (int i = 0; i < count; ++i) {
         KeyBlockProcessInfo info = infoArray[i];
-        info->errorCode = KeyBlockAllocatorAlloc(info->size, &info->offset);
+        info->errorCode = KeyBlockAllocatorAlloc(info->size,
+                                                 &info->offset,
+                                                 &info->filePath,
+                                                 &info->capacity,
+                                                 &info->state);
         if (info->errorCode != SUCCESS) {
-            continue;
-        }
-        if (!LoadSizeFileInfo(info, info->size)) {
-            info->errorCode = FILE_NOT_EXISTS;
             continue;
         }
         info->nextOffset = info->offset + info->size;
@@ -3232,8 +3268,9 @@ void FalconBlockAllocHandle(KeyBlockProcessInfo *infoArray, int count)
 void FalconBlockInsertHandle(KeyBlockProcessInfo *infoArray, int count)
 {
     MemoryContext oldcontext = CurrentMemoryContext;
-    Relation keyBlockRel = table_open(GetRelationOidByName_FALCON(KeyBlockTableName), RowExclusiveLock);
+    Relation keyBlockRel = table_open(GetRelationOidByName_FALCON(KeyBlockTableName), AccessExclusiveLock);
     CatalogIndexState indexState = CatalogOpenIndexes(keyBlockRel);
+    Oid keyBlockIndexOid = FalconTableIndexOid(KeyBlockTableName);
     TupleDesc tupleDesc = RelationGetDescr(keyBlockRel);
 
     for (int i = 0; i < count; ++i) {
@@ -3241,6 +3278,10 @@ void FalconBlockInsertHandle(KeyBlockProcessInfo *infoArray, int count)
         info->errorCode = SUCCESS;
         if (info->key == NULL || info->size == 0 || !LoadSizeFileInfo(info, info->size)) {
             info->errorCode = INVALID_PARAMETER;
+            continue;
+        }
+        if (KeyBlockExists(keyBlockRel, keyBlockIndexOid, info->key)) {
+            info->errorCode = FILE_EXISTS;
             continue;
         }
 
@@ -3277,14 +3318,14 @@ void FalconBlockInsertHandle(KeyBlockProcessInfo *infoArray, int count)
     }
 
     CatalogCloseIndexes(indexState);
-    table_close(keyBlockRel, RowExclusiveLock);
+    table_close(keyBlockRel, NoLock);
 }
 
 void FalconBlockUpdateHandle(KeyBlockProcessInfo *infoArray, int count)
 {
     SetUpScanCaches();
 
-    Relation keyBlockRel = table_open(GetRelationOidByName_FALCON(KeyBlockTableName), RowExclusiveLock);
+    Relation keyBlockRel = table_open(GetRelationOidByName_FALCON(KeyBlockTableName), AccessExclusiveLock);
     Oid keyBlockIndexOid = FalconTableIndexOid(KeyBlockTableName);
     TupleDesc tupleDesc = RelationGetDescr(keyBlockRel);
 
@@ -3334,7 +3375,7 @@ void FalconBlockUpdateHandle(KeyBlockProcessInfo *infoArray, int count)
         systable_endscan(scanDesc);
     }
 
-    table_close(keyBlockRel, RowExclusiveLock);
+    table_close(keyBlockRel, NoLock);
 }
 
 void FalconBlockAbortAllocHandle(KeyBlockProcessInfo *infoArray, int count)
@@ -3349,7 +3390,7 @@ void FalconBlockDelHandle(KeyBlockProcessInfo *infoArray, int count)
 {
     SetUpScanCaches();
 
-    Relation keyBlockRel = table_open(GetRelationOidByName_FALCON(KeyBlockTableName), RowExclusiveLock);
+    Relation keyBlockRel = table_open(GetRelationOidByName_FALCON(KeyBlockTableName), AccessExclusiveLock);
     Oid keyBlockIndexOid = FalconTableIndexOid(KeyBlockTableName);
 
     for (int i = 0; i < count; ++i) {
@@ -3379,7 +3420,7 @@ void FalconBlockDelHandle(KeyBlockProcessInfo *infoArray, int count)
         systable_endscan(scanDesc);
     }
 
-    table_close(keyBlockRel, RowExclusiveLock);
+    table_close(keyBlockRel, NoLock);
 }
 
 void FalconBlockStatHandle(KeyBlockProcessInfo *infoArray, int count)
@@ -3390,8 +3431,11 @@ void FalconBlockStatHandle(KeyBlockProcessInfo *infoArray, int count)
 void FalconSizeFileCreateHandle(KeyBlockProcessInfo *infoArray, int count)
 {
     MemoryContext oldcontext = CurrentMemoryContext;
-    Relation sizeFileRel = table_open(GetRelationOidByName_FALCON(SizeFileTableName), RowExclusiveLock);
+    SetUpScanCaches();
+
+    Relation sizeFileRel = table_open(GetRelationOidByName_FALCON(SizeFileTableName), AccessExclusiveLock);
     CatalogIndexState indexState = CatalogOpenIndexes(sizeFileRel);
+    Oid sizeFileIndexOid = FalconTableIndexOid(SizeFileTableName);
     TupleDesc tupleDesc = RelationGetDescr(sizeFileRel);
 
     for (int i = 0; i < count; ++i) {
@@ -3399,6 +3443,10 @@ void FalconSizeFileCreateHandle(KeyBlockProcessInfo *infoArray, int count)
         info->errorCode = SUCCESS;
         if (info->size == 0 || info->capacity < info->size) {
             info->errorCode = INVALID_PARAMETER;
+            continue;
+        }
+        if (SizeFileExists(sizeFileRel, sizeFileIndexOid, info->size)) {
+            info->errorCode = FILE_EXISTS;
             continue;
         }
 
@@ -3439,7 +3487,7 @@ void FalconSizeFileCreateHandle(KeyBlockProcessInfo *infoArray, int count)
     }
 
     CatalogCloseIndexes(indexState);
-    table_close(sizeFileRel, RowExclusiveLock);
+    table_close(sizeFileRel, NoLock);
 }
 
 void FalconSizeFileStatHandle(KeyBlockProcessInfo *infoArray, int count)

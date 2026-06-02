@@ -8,6 +8,9 @@
 #include <cerrno>
 #include <cstdlib>
 #include <limits>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
 
 #include "block_store/size_file_store.h"
 #include "falcon_meta.h"
@@ -77,6 +80,37 @@ int EnsureSizeFile(const std::shared_ptr<Connection> &conn, uint64_t size)
     }
     return SizeFileStore::CreateSizeFile(sizeFile.filePath, sizeFile.capacity);
 }
+
+int WriteExistingBlock(const std::shared_ptr<Connection> &conn,
+                       const std::string &key,
+                       const char *buffer,
+                       size_t size,
+                       const Connection::BlockLocationResult &location)
+{
+    if (location.size != size) {
+        return INVALID_PARAMETER;
+    }
+    int ret = SizeFileStore::Write(location.filePath, location.offset, buffer, location.size);
+    if (ret != SUCCESS) {
+        return ret;
+    }
+    return conn->BlockUpdate(key.c_str());
+}
+
+std::shared_ptr<std::mutex> GetKeyMutex(const std::string &key)
+{
+    static std::mutex mapMutex;
+    static std::unordered_map<std::string, std::weak_ptr<std::mutex>> keyMutexes;
+
+    std::lock_guard<std::mutex> guard(mapMutex);
+    auto &weakMutex = keyMutexes[key];
+    std::shared_ptr<std::mutex> keyMutex = weakMutex.lock();
+    if (keyMutex == nullptr) {
+        keyMutex = std::make_shared<std::mutex>();
+        weakMutex = keyMutex;
+    }
+    return keyMutex;
+}
 } // namespace
 
 int FalconBlockPut(const std::string &key, const char *buffer, size_t size)
@@ -89,17 +123,13 @@ int FalconBlockPut(const std::string &key, const char *buffer, size_t size)
         return INVALID_PARAMETER;
     }
 
+    std::shared_ptr<std::mutex> keyMutex = GetKeyMutex(key);
+    std::lock_guard<std::mutex> keyGuard(*keyMutex);
+
     Connection::BlockLocationResult location;
     int ret = conn->BlockGet(key.c_str(), location);
     if (ret == SUCCESS) {
-        if (location.size != size) {
-            return INVALID_PARAMETER;
-        }
-        ret = SizeFileStore::Write(location.filePath, location.offset, buffer, location.size);
-        if (ret != SUCCESS) {
-            return ret;
-        }
-        return conn->BlockUpdate(key.c_str());
+        return WriteExistingBlock(conn, key, buffer, size, location);
     }
     if (ret != FILE_NOT_EXISTS) {
         return ret;
@@ -117,6 +147,12 @@ int FalconBlockPut(const std::string &key, const char *buffer, size_t size)
         return ret;
     }
 
+    ret = EnsureSizeFile(conn, size);
+    if (ret != SUCCESS) {
+        conn->BlockAbortAlloc(location.size, location.offset);
+        return ret;
+    }
+
     ret = SizeFileStore::Write(location.filePath, location.offset, buffer, location.size);
     if (ret != SUCCESS) {
         conn->BlockAbortAlloc(location.size, location.offset);
@@ -126,6 +162,13 @@ int FalconBlockPut(const std::string &key, const char *buffer, size_t size)
     ret = conn->BlockInsert(key.c_str(), location.size, location.offset);
     if (ret != SUCCESS) {
         conn->BlockAbortAlloc(location.size, location.offset);
+        if (ret == FILE_EXISTS) {
+            Connection::BlockLocationResult existing;
+            int getRet = conn->BlockGet(key.c_str(), existing);
+            if (getRet == SUCCESS) {
+                return WriteExistingBlock(conn, key, buffer, size, existing);
+            }
+        }
     }
     return ret;
 }

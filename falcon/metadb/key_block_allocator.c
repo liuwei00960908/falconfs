@@ -15,6 +15,7 @@
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "utils/hsearch.h"
+#include "utils/builtins.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
@@ -162,7 +163,11 @@ FalconErrorCode KeyBlockAllocatorCreateSize(uint64_t size, uint64_t capacity)
     return SUCCESS;
 }
 
-FalconErrorCode KeyBlockAllocatorAlloc(uint64_t size, uint64_t *offset)
+FalconErrorCode KeyBlockAllocatorAlloc(uint64_t size,
+                                       uint64_t *offset,
+                                       char **filePath,
+                                       uint64_t *capacityOut,
+                                       uint32_t *stateOut)
 {
     if (size == 0 || offset == NULL) {
         return INVALID_PARAMETER;
@@ -196,13 +201,30 @@ FalconErrorCode KeyBlockAllocatorAlloc(uint64_t size, uint64_t *offset)
                                                       Anum_falcon_size_file_table_next_offset,
                                                       tupleDesc,
                                                       &isNull));
+    char *path = TextDatumGetCString(heap_getattr(heapTuple,
+                                                  Anum_falcon_size_file_table_file_path,
+                                                  tupleDesc,
+                                                  &isNull));
     uint64_t capacity = DatumGetUInt64(heap_getattr(heapTuple,
                                                     Anum_falcon_size_file_table_capacity,
                                                     tupleDesc,
                                                     &isNull));
+    uint32_t state = DatumGetUInt32(heap_getattr(heapTuple,
+                                                 Anum_falcon_size_file_table_state,
+                                                 tupleDesc,
+                                                 &isNull));
     if (nextOffset > capacity || size > capacity - nextOffset) {
         KeyBlockAllocatorEnableReclaim(size);
         if (KeyBlockAllocatorPopFreeOffset(size, offset)) {
+            if (filePath != NULL) {
+                *filePath = path;
+            }
+            if (capacityOut != NULL) {
+                *capacityOut = capacity;
+            }
+            if (stateOut != NULL) {
+                *stateOut = state;
+            }
             systable_endscan(scanDesc);
             table_close(sizeFileRel, AccessExclusiveLock);
             return SUCCESS;
@@ -214,6 +236,15 @@ FalconErrorCode KeyBlockAllocatorAlloc(uint64_t size, uint64_t *offset)
 
     *offset = nextOffset;
     nextOffset += size;
+    if (filePath != NULL) {
+        *filePath = path;
+    }
+    if (capacityOut != NULL) {
+        *capacityOut = capacity;
+    }
+    if (stateOut != NULL) {
+        *stateOut = state;
+    }
 
     Datum values[Natts_falcon_size_file_table];
     bool isNulls[Natts_falcon_size_file_table];
@@ -231,7 +262,7 @@ FalconErrorCode KeyBlockAllocatorAlloc(uint64_t size, uint64_t *offset)
     heap_freetuple(updatedTuple);
 
     systable_endscan(scanDesc);
-    table_close(sizeFileRel, AccessExclusiveLock);
+    table_close(sizeFileRel, NoLock);
     return SUCCESS;
 }
 
@@ -284,6 +315,9 @@ FalconErrorCode KeyBlockAllocatorAbort(uint64_t size, uint64_t offset)
         HeapTuple updatedTuple = heap_modify_tuple(heapTuple, tupleDesc, values, isNulls, updates);
         CatalogTupleUpdate(sizeFileRel, &updatedTuple->t_self, updatedTuple);
         heap_freetuple(updatedTuple);
+        systable_endscan(scanDesc);
+        table_close(sizeFileRel, NoLock);
+        return SUCCESS;
     } else {
         (void)KeyBlockAllocatorFree(size, offset);
     }

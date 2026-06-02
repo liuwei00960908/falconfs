@@ -15,7 +15,11 @@
  * Later phases add shared free_lists, reclaim, and rebuild behind this API.
  */
 FalconErrorCode KeyBlockAllocatorCreateSize(uint64_t size, uint64_t capacity);
-FalconErrorCode KeyBlockAllocatorAlloc(uint64_t size, uint64_t *offset);
+FalconErrorCode KeyBlockAllocatorAlloc(uint64_t size,
+                                       uint64_t *offset,
+                                       char **filePath,
+                                       uint64_t *capacity,
+                                       uint32_t *state);
 FalconErrorCode KeyBlockAllocatorAbort(uint64_t size, uint64_t offset);
 FalconErrorCode KeyBlockAllocatorFree(uint64_t size, uint64_t offset);
 
