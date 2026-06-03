@@ -9,6 +9,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <unordered_map>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -17,6 +18,50 @@
 #include "remote_connection_utils/error_code_def.h"
 
 namespace {
+class ThreadLocalFdCache {
+  public:
+    ThreadLocalFdCache() = default;
+    ThreadLocalFdCache(const ThreadLocalFdCache &) = delete;
+    ThreadLocalFdCache &operator=(const ThreadLocalFdCache &) = delete;
+
+    ~ThreadLocalFdCache()
+    {
+        for (auto &entry : fds_) {
+            close(entry.second);
+        }
+    }
+
+    int Get(const std::string &path)
+    {
+        auto iter = fds_.find(path);
+        if (iter != fds_.end()) {
+            return iter->second;
+        }
+
+        int fd = open(path.c_str(), O_RDWR);
+        if (fd < 0) {
+            return -1;
+        }
+        fds_.emplace(path, fd);
+        return fd;
+    }
+
+    void Invalidate(const std::string &path)
+    {
+        auto iter = fds_.find(path);
+        if (iter == fds_.end()) {
+            return;
+        }
+        close(iter->second);
+        fds_.erase(iter);
+    }
+
+  private:
+    std::unordered_map<std::string, int> fds_;
+};
+
+thread_local ThreadLocalFdCache SizeFileFdCache;
+
 std::string ResolvePath(const std::string &filePath)
 {
     if (filePath.empty() || filePath.front() == '/') {
@@ -72,6 +117,55 @@ int ReadFull(int fd, char *buffer, uint64_t size, uint64_t offset)
     }
     return SUCCESS;
 }
+
+bool ShouldRetryCachedFd(int error)
+{
+    return error == EBADF || error == ENOENT || error == ESTALE || error == EIO;
+}
+
+int WriteWithCachedFd(const std::string &resolved, const char *buffer, uint64_t size, uint64_t offset)
+{
+    int fd = SizeFileFdCache.Get(resolved);
+    if (fd < 0) {
+        return IO_ERROR;
+    }
+
+    errno = 0;
+    int ret = WriteFull(fd, buffer, size, offset);
+    int savedErrno = errno;
+    if (ret == SUCCESS || !ShouldRetryCachedFd(savedErrno)) {
+        return ret;
+    }
+
+    SizeFileFdCache.Invalidate(resolved);
+    fd = SizeFileFdCache.Get(resolved);
+    if (fd < 0) {
+        return IO_ERROR;
+    }
+    return WriteFull(fd, buffer, size, offset);
+}
+
+int ReadWithCachedFd(const std::string &resolved, char *buffer, uint64_t size, uint64_t offset)
+{
+    int fd = SizeFileFdCache.Get(resolved);
+    if (fd < 0) {
+        return IO_ERROR;
+    }
+
+    errno = 0;
+    int ret = ReadFull(fd, buffer, size, offset);
+    int savedErrno = errno;
+    if (ret == SUCCESS || !ShouldRetryCachedFd(savedErrno)) {
+        return ret;
+    }
+
+    SizeFileFdCache.Invalidate(resolved);
+    fd = SizeFileFdCache.Get(resolved);
+    if (fd < 0) {
+        return IO_ERROR;
+    }
+    return ReadFull(fd, buffer, size, offset);
+}
 } // namespace
 
 int SizeFileStore::CreateSizeFile(const std::string &filePath, uint64_t capacity)
@@ -114,14 +208,7 @@ int SizeFileStore::Write(const std::string &filePath, uint64_t offset, const cha
         return INVALID_PARAMETER;
     }
 
-    int fd = open(resolved.c_str(), O_RDWR);
-    if (fd < 0) {
-        return IO_ERROR;
-    }
-
-    int ret = WriteFull(fd, buffer, size, offset);
-    close(fd);
-    return ret;
+    return WriteWithCachedFd(resolved, buffer, size, offset);
 }
 
 int SizeFileStore::Read(const std::string &filePath, uint64_t offset, char *buffer, uint64_t size)
@@ -131,12 +218,5 @@ int SizeFileStore::Read(const std::string &filePath, uint64_t offset, char *buff
         return INVALID_PARAMETER;
     }
 
-    int fd = open(resolved.c_str(), O_RDONLY);
-    if (fd < 0) {
-        return IO_ERROR;
-    }
-
-    int ret = ReadFull(fd, buffer, size, offset);
-    close(fd);
-    return ret;
+    return ReadWithCachedFd(resolved, buffer, size, offset);
 }
