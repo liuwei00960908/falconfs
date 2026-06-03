@@ -151,12 +151,35 @@ ceil_div() {
 }
 
 check_disk_space() {
-    local required_gib=$((TOTAL_GIB + MIN_FREE_GIB_EXTRA))
+    local thread_count=0
+    local t
+    for t in $THREADS; do
+        thread_count=$((thread_count + 1))
+    done
+
+    local block_required_gib=$((TOTAL_GIB * thread_count * ROUNDS + MIN_FREE_GIB_EXTRA))
+    local posix_required_gib=$((TOTAL_GIB + MIN_FREE_GIB_EXTRA))
+
+    check_path_free_space "$BLOCK_DATA_DIR" "$block_required_gib" "block_data_dir"
+    check_path_free_space "$POSIX_ROOT" "$posix_required_gib" "posix_root"
+    check_path_free_space "$RESULT_DIR" 1 "result_dir"
+}
+
+check_path_free_space() {
+    local path="$1"
+    local required_gib="$2"
+    local label="$3"
+    local check_path="$path"
+
+    while [[ ! -e "$check_path" ]]; do
+        check_path=$(dirname "$check_path")
+    done
+
     local avail_kib
-    avail_kib=$(df -Pk /tmp | awk 'NR==2 {print $4}')
+    avail_kib=$(df -Pk "$check_path" | awk 'NR==2 {print $4}')
     local avail_gib=$((avail_kib / 1024 / 1024))
     if ((avail_gib < required_gib)); then
-        echo "not enough free space on /tmp: available=${avail_gib}GiB required=${required_gib}GiB" >&2
+        echo "not enough free space for ${label} (${path}): available=${avail_gib}GiB required=${required_gib}GiB" >&2
         exit 1
     fi
 }
@@ -213,6 +236,11 @@ contains_op() {
     return 1
 }
 
+log_progress() {
+    local message="$1"
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$message"
+}
+
 prepare_outputs() {
     mkdir -p "$RESULT_DIR/logs" "$BLOCK_DATA_DIR" /tmp/opencode
     CSV_FILE="$RESULT_DIR/block_vs_baseline.csv"
@@ -242,6 +270,7 @@ block_data_file() {
 block_cleanup() {
     local prefix="$1"
     "$BLOCK_BENCH" --host "$HOST" --port "$PORT" --op del --size "$SIZE" --capacity "$CAPACITY" \
+        --block-data-dir "$BLOCK_DATA_DIR" \
         --keys "$TOTAL_OPS" --threads 1 --prefix "$prefix" --phase put --no-prepare --csv \
         > /dev/null 2>&1 || true
 }
@@ -255,7 +284,11 @@ parse_block_csv() {
 run_block_prepare() {
     local prefix="$1"
     local log="$2"
+    local round="${3:-?}"
+    local threads="${4:-1}"
+    log_progress "start block prepare round=$round threads=$threads total_gib=$TOTAL_GIB prefix=$prefix log=$log"
     "$BLOCK_BENCH" --host "$HOST" --port "$PORT" --op put --size "$SIZE" --capacity "$CAPACITY" \
+        --block-data-dir "$BLOCK_DATA_DIR" \
         --keys "$TOTAL_OPS" --threads 1 --prefix "$prefix" --csv > "$log" 2>&1
     local line
     line=$(tail -n 1 "$log")
@@ -277,7 +310,7 @@ run_block_case() {
     block_cleanup "$prefix"
 
     if [[ "$op" == "get" || "$op" == "del" ]]; then
-        run_block_prepare "$prefix" "$RESULT_DIR/logs/block_${op}_prepare_r${round}_t${threads}.log"
+        run_block_prepare "$prefix" "$RESULT_DIR/logs/block_${op}_prepare_r${round}_t${threads}.log" "$round" "$threads"
     fi
 
     local verify_args=()
@@ -286,10 +319,14 @@ run_block_case() {
     fi
 
     if [[ "$op" == "put" ]]; then
+        log_progress "start block put round=$round threads=$threads total_gib=$TOTAL_GIB prefix=$prefix log=$log"
         "$BLOCK_BENCH" --host "$HOST" --port "$PORT" --op put --size "$SIZE" --capacity "$CAPACITY" \
+            --block-data-dir "$BLOCK_DATA_DIR" \
             --keys "$TOTAL_OPS" --threads "$threads" --prefix "$prefix" --csv > "$log" 2>&1
     else
+        log_progress "start block $op round=$round threads=$threads total_gib=$TOTAL_GIB prefix=$prefix log=$log"
         "$BLOCK_BENCH" --host "$HOST" --port "$PORT" --op "$op" --size "$SIZE" --capacity "$CAPACITY" \
+            --block-data-dir "$BLOCK_DATA_DIR" \
             --keys "$TOTAL_OPS" --threads "$threads" --prefix "$prefix" --phase "$measured_phase" \
             --no-prepare --csv "${verify_args[@]}" > "$log" 2>&1
     fi
@@ -320,7 +357,9 @@ run_block_group() {
 
     if contains_op put; then
         local put_log="$RESULT_DIR/logs/block_put_r${round}_t${threads}.log"
+        log_progress "start block put round=$round threads=$threads total_gib=$TOTAL_GIB prefix=$prefix log=$put_log"
         "$BLOCK_BENCH" --host "$HOST" --port "$PORT" --op put --size "$SIZE" --capacity "$CAPACITY" \
+            --block-data-dir "$BLOCK_DATA_DIR" \
             --keys "$TOTAL_OPS" --threads "$threads" --prefix "$prefix" --csv > "$put_log" 2>&1
         local line
         line=$(tail -n 1 "$put_log")
@@ -332,7 +371,7 @@ run_block_group() {
         append_result "block" "put" "$round" "$threads" "$success_ops" "$seconds" "$ops_sec" "$mib_sec" \
             "$avg_ns" "$avg_us" "$p50_us" "$p95_us" "$p99_us" "$errors" "$prefix" "$put_log"
     elif contains_op get || contains_op del; then
-        run_block_prepare "$prefix" "$RESULT_DIR/logs/block_prepare_r${round}_t${threads}.log"
+        run_block_prepare "$prefix" "$RESULT_DIR/logs/block_prepare_r${round}_t${threads}.log" "$round" "$threads"
     fi
 
     if contains_op get; then
@@ -340,7 +379,9 @@ run_block_group() {
         if [[ "$BLOCK_VERIFY" == true ]]; then
             verify_args+=(--verify)
         fi
+        log_progress "start block get round=$round threads=$threads total_gib=$TOTAL_GIB prefix=$prefix log=$get_log"
         "$BLOCK_BENCH" --host "$HOST" --port "$PORT" --op get --size "$SIZE" --capacity "$CAPACITY" \
+            --block-data-dir "$BLOCK_DATA_DIR" \
             --keys "$TOTAL_OPS" --threads "$threads" --prefix "$prefix" --phase put --no-prepare --csv \
             "${verify_args[@]}" > "$get_log" 2>&1
         local line
@@ -356,7 +397,9 @@ run_block_group() {
 
     if contains_op del; then
         local del_log="$RESULT_DIR/logs/block_del_r${round}_t${threads}.log"
+        log_progress "start block del round=$round threads=$threads total_gib=$TOTAL_GIB prefix=$prefix log=$del_log"
         "$BLOCK_BENCH" --host "$HOST" --port "$PORT" --op del --size "$SIZE" --capacity "$CAPACITY" \
+            --block-data-dir "$BLOCK_DATA_DIR" \
             --keys "$TOTAL_OPS" --threads "$threads" --prefix "$prefix" --phase put --no-prepare --csv \
             > "$del_log" 2>&1
         local line
@@ -398,6 +441,8 @@ run_posix_round() {
     local round_idx="$4"
     local port="$5"
     local log="$6"
+    local label="${7:-round_idx=$round_idx}"
+    log_progress "start posix $label threads=$threads files_per_thread=$files_per_thread size=$SIZE log=$log"
     "$POSIX_BENCH" "$root/" "$files_per_thread" "$threads" "$round_idx" 0 1 16384 "$port" "$SIZE" 1 \
         > "$log" 2>&1 &
     local pid=$!
@@ -446,15 +491,15 @@ run_posix_case() {
 
     case "$op" in
         put)
-            run_posix_round "$root" "$files_per_thread" "$threads" 8 "$port" "$log"
+            run_posix_round "$root" "$files_per_thread" "$threads" 8 "$port" "$log" "put round=$round"
             ;;
         get)
-            run_posix_round "$root" "$files_per_thread" "$threads" 8 "$port" "$prepare_log"
-            run_posix_round "$root" "$files_per_thread" "$threads" 10 "$port" "$log"
+            run_posix_round "$root" "$files_per_thread" "$threads" 8 "$port" "$prepare_log" "prepare-get round=$round"
+            run_posix_round "$root" "$files_per_thread" "$threads" 10 "$port" "$log" "get round=$round"
             ;;
         del)
-            run_posix_round "$root" "$files_per_thread" "$threads" 8 "$port" "$prepare_log"
-            run_posix_round "$root" "$files_per_thread" "$threads" 5 "$port" "$log"
+            run_posix_round "$root" "$files_per_thread" "$threads" 8 "$port" "$prepare_log" "prepare-del round=$round"
+            run_posix_round "$root" "$files_per_thread" "$threads" 5 "$port" "$log" "del round=$round"
             ;;
     esac
 
@@ -479,18 +524,18 @@ run_posix_group() {
 
     if contains_op put; then
         local put_log="$RESULT_DIR/logs/posix_put_r${round}_t${threads}.log"
-        run_posix_round "$root" "$files_per_thread" "$threads" 8 "$port" "$put_log"
+        run_posix_round "$root" "$files_per_thread" "$threads" 8 "$port" "$put_log" "put round=$round"
         parse_posix_log "$put_log"
         append_result "posix" "put" "$round" "$threads" "$success_ops" "$seconds" "$ops_sec" "$mib_sec" \
             "$avg_ns" "$avg_us" "$p50_us" "$p95_us" "$p99_us" "$errors" "" "$put_log"
     elif contains_op get || contains_op del; then
         run_posix_round "$root" "$files_per_thread" "$threads" 8 "$port" \
-            "$RESULT_DIR/logs/posix_prepare_r${round}_t${threads}.log"
+            "$RESULT_DIR/logs/posix_prepare_r${round}_t${threads}.log" "prepare round=$round"
     fi
 
     if contains_op get; then
         local get_log="$RESULT_DIR/logs/posix_get_r${round}_t${threads}.log"
-        run_posix_round "$root" "$files_per_thread" "$threads" 10 "$port" "$get_log"
+        run_posix_round "$root" "$files_per_thread" "$threads" 10 "$port" "$get_log" "get round=$round"
         parse_posix_log "$get_log"
         append_result "posix" "get" "$round" "$threads" "$success_ops" "$seconds" "$ops_sec" "$mib_sec" \
             "$avg_ns" "$avg_us" "$p50_us" "$p95_us" "$p99_us" "$errors" "" "$get_log"
@@ -498,7 +543,7 @@ run_posix_group() {
 
     if contains_op del; then
         local del_log="$RESULT_DIR/logs/posix_del_r${round}_t${threads}.log"
-        run_posix_round "$root" "$files_per_thread" "$threads" 5 "$port" "$del_log"
+        run_posix_round "$root" "$files_per_thread" "$threads" 5 "$port" "$del_log" "del round=$round"
         parse_posix_log "$del_log"
         append_result "posix" "del" "$round" "$threads" "$success_ops" "$seconds" "$ops_sec" "$mib_sec" \
             "$avg_ns" "$avg_us" "$p50_us" "$p95_us" "$p99_us" "$errors" "" "$del_log"
